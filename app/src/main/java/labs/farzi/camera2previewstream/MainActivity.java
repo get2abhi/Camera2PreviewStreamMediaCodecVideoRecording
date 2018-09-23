@@ -25,12 +25,13 @@ import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
 import android.media.MediaCodecList;
 import android.media.MediaFormat;
+import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.support.annotation.NonNull;
 import android.support.v4.app.ActivityCompat;
 import android.support.v7.app.AppCompatActivity;
-import android.os.Bundle;
 import android.util.Log;
 import android.util.Size;
 import android.util.SparseArray;
@@ -40,6 +41,9 @@ import android.view.TextureView;
 import android.view.WindowManager;
 import android.widget.Toast;
 
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -53,6 +57,10 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 
 public class MainActivity extends AppCompatActivity {
+
+    static{
+        System.loadLibrary("native-yuv-to-buffer-lib");
+    }
     private static final String TAG = "Camera2PreviewStream";
     /**
      * An {@link AutoFitTextureView} for camera preview.
@@ -206,9 +214,10 @@ public class MainActivity extends AppCompatActivity {
     private static final int BIT_RATE = 2000000;            // 2Mbps
     private static final int FRAME_RATE = 15;               // 15fps
     private static final int IFRAME_INTERVAL = 10;          // 10 seconds between I-frames
-    private static final int WIDTH = 1280;
-    private static final int HEIGHT = 720;
+    private static final int WIDTH = 320;
+    private static final int HEIGHT = 240;
     Queue<MyData> mQueue = new LinkedList<MyData>();
+    FileOutputStream fos;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -226,7 +235,11 @@ public class MainActivity extends AppCompatActivity {
         } else {
             textureView.setSurfaceTextureListener(surfaceTextureListener);
         }
-
+        try {
+            fos = new FileOutputStream(Environment.getExternalStorageDirectory()+ File.separator+"text.h264");
+        } catch (FileNotFoundException e) {
+            e.printStackTrace();
+        }
         MediaFormat format = createMediaFormat();
         MediaCodecInfo mediaCodecInfo = selectCodec(MIME_TYPE);
 
@@ -237,29 +250,53 @@ public class MainActivity extends AppCompatActivity {
             e.printStackTrace();
         }
         MediaFormat mOutputFormat; // member variable
-        final MediaCodec finalCodec = codec;
+//        final MediaCodec finalCodec = codec;
         codec.setCallback(new MediaCodec.Callback() {
             @Override
             public void onInputBufferAvailable(MediaCodec mc, int inputBufferId) {
-                ByteBuffer inputBuffer = finalCodec.getInputBuffer(inputBufferId);
+                ByteBuffer inputBuffer = mc.getInputBuffer(inputBufferId);
+                Log.d(TAG, "onInputBufferAvailable: ");
                 // fill inputBuffer with valid data
                 MyData data = mQueue.poll();
                 if (data != null) {
-                    inputBuffer.get(data.getBuffer());
                     // check if is EOS and process with EOS flag if is the case
                     // else if NOT EOS
+                    if (inputBuffer != null) {
+                        Log.e(TAG, "onInputBufferAvailable: "+data.getBuffer().length);
+                        inputBuffer.clear();
+                        inputBuffer.put(data.getBuffer());
 
-                    finalCodec.queueInputBuffer(inputBufferId,
+                        mc.queueInputBuffer(inputBufferId,
+                                0,
+                                data.getBuffer().length,
+                                data.getPresentationTimeUs(),
+                                0);
+                    }
+
+                } else {
+
+                    mc.queueInputBuffer(inputBufferId,
                             0,
-                            data.getBuffer().length,
-                            data.getPresentationTimeUs(),
+                            0,
+                            0,
                             0);
                 }
             }
 
             @Override
             public void onOutputBufferAvailable(@NonNull MediaCodec codec, int index, @NonNull MediaCodec.BufferInfo info) {
-
+                Log.d(TAG, "onOutputBufferAvailable: ");
+                ByteBuffer outputBuffer = codec.getOutputBuffer(index);
+                byte[] outData = new byte[info.size];
+                if (outputBuffer != null) {
+                    outputBuffer.get(outData);
+                    try {
+                        fos.write(outData);
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }
+                }
+                codec.releaseOutputBuffer(index,false);
             }
 
             @Override
@@ -269,9 +306,11 @@ public class MainActivity extends AppCompatActivity {
 
             @Override
             public void onOutputFormatChanged(@NonNull MediaCodec codec, @NonNull MediaFormat format) {
+                Log.d(TAG, "onOutputFormatChanged: " + format.toString());
 
             }
         });
+
         codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
         mOutputFormat = codec.getOutputFormat(); // option B
         codec.start();
@@ -307,11 +346,12 @@ public class MainActivity extends AppCompatActivity {
             Log.d("hehe", "open Camera");
         } catch (final CameraAccessException e) {
             //Timber.tag(TAG).e("Exception!", e);
-            Log.d("hehe", "Exception!"+ e.getMessage());
+            Log.d("hehe", "Exception!" + e.getMessage());
         } catch (final InterruptedException e) {
             throw new RuntimeException("Interrupted while trying to lock camera opening.", e);
         }
     }
+
     private void setUpCameraOutputs(final int width, final int height) {
         final CameraManager manager = (CameraManager) getSystemService(Context.CAMERA_SERVICE);
         try {
@@ -497,7 +537,7 @@ public class MainActivity extends AppCompatActivity {
                                         previewRequest, captureCallback, backgroundHandler);
                             } catch (final CameraAccessException e) {
                                 //Timber.tag(TAG).e("Exception!", e);
-                                Log.d("hehe", "Exception!"+ e.getMessage());
+                                Log.d("hehe", "Exception!" + e.getMessage());
                             }
                         }
 
@@ -509,7 +549,7 @@ public class MainActivity extends AppCompatActivity {
                     null);
         } catch (final CameraAccessException e) {
             //Timber.tag(TAG).e("Exception!", e);
-            Log.d("hehe", "Exception! "+ e.getMessage());
+            Log.d("hehe", "Exception! " + e.getMessage());
         }
 
         //mOnGetPreviewListener.initialize(getApplicationContext(), getAssets(), mScoreView, inferenceHandler);
@@ -523,8 +563,22 @@ public class MainActivity extends AppCompatActivity {
             Image image = reader.acquireLatestImage();
             if (image == null)
                 return;
-            byte[] mBuffer = yuvImageToByteArray(image);
-            mQueue.add(new MyData(mBuffer,image.getTimestamp(), false));
+            final Image.Plane[] planes = image.getPlanes();
+            Image.Plane yPlane = planes[0];
+            Image.Plane uPlane = planes[1];
+            Image.Plane vPlane = planes[2];
+            byte[] mBuffer = yuvToBuffer(yPlane.getBuffer(),
+                    uPlane.getBuffer(),
+                    vPlane.getBuffer(),
+                    yPlane.getPixelStride(),
+                    yPlane.getRowStride(),
+                    uPlane.getPixelStride(),
+                    uPlane.getRowStride(),
+                    vPlane.getPixelStride(),
+                    vPlane.getRowStride(),
+                    image.getWidth(),
+                    image.getHeight());
+            mQueue.add(new MyData(mBuffer, image.getTimestamp(), false));
             image.close();
             Log.d("hehe", "onImageAvailable");
         }
@@ -575,10 +629,12 @@ public class MainActivity extends AppCompatActivity {
     @TargetApi(19)
     public static byte[] yuvImageToByteArray(Image image) {
 
-        assert(image.getFormat() == ImageFormat.YUV_420_888);
+        assert (image.getFormat() == ImageFormat.YUV_420_888);
 
         int width = image.getWidth();
         int height = image.getHeight();
+
+        Log.d(TAG, "yuvImageToByteArray: " + width + " - "+ height );
 
         Image.Plane[] planes = image.getPlanes();
         byte[] result = new byte[width * height * 3 / 2];
@@ -586,11 +642,10 @@ public class MainActivity extends AppCompatActivity {
         int stride = planes[0].getRowStride();
         if (stride == width) {
             planes[0].getBuffer().get(result, 0, width);
-        }
-        else {
+        } else {
             for (int row = 0; row < height; row++) {
-                planes[0].getBuffer().position(row*stride);
-                planes[0].getBuffer().get(result, row*width, width);
+                planes[0].getBuffer().position(row * stride);
+                planes[0].getBuffer().get(result, row * width, width);
             }
         }
 
@@ -599,16 +654,16 @@ public class MainActivity extends AppCompatActivity {
         byte[] rowBytesCb = new byte[stride];
         byte[] rowBytesCr = new byte[stride];
 
-        for (int row = 0; row < height/2; row++) {
-            int rowOffset = width*height + width/2 * row;
-            planes[1].getBuffer().position(row*stride);
-            planes[1].getBuffer().get(rowBytesCb, 0, width/2);
-            planes[2].getBuffer().position(row*stride);
-            planes[2].getBuffer().get(rowBytesCr, 0, width/2);
+        for (int row = 0; row < height / 2; row++) {
+            int rowOffset = width * height + width / 2 * row;
+            planes[1].getBuffer().position(row * stride);
+            planes[1].getBuffer().get(rowBytesCb, 0, width / 2);
+            planes[2].getBuffer().position(row * stride);
+            planes[2].getBuffer().get(rowBytesCr, 0, width / 2);
 
-            for (int col = 0; col < width/2; col++) {
-                result[rowOffset + col*2] = rowBytesCr[col];
-                result[rowOffset + col*2 + 1] = rowBytesCb[col];
+            for (int col = 0; col < width / 2; col++) {
+                result[rowOffset + col * 2] = rowBytesCr[col];
+                result[rowOffset + col * 2 + 1] = rowBytesCb[col];
             }
         }
         return result;
@@ -620,7 +675,7 @@ public class MainActivity extends AppCompatActivity {
     private static MediaFormat createMediaFormat() {
         MediaFormat format = MediaFormat.createVideoFormat(MIME_TYPE, WIDTH, HEIGHT);
         format.setInteger(MediaFormat.KEY_COLOR_FORMAT,
-                MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
+                MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible);
         format.setInteger(MediaFormat.KEY_BIT_RATE, BIT_RATE);
         format.setInteger(MediaFormat.KEY_FRAME_RATE, FRAME_RATE);
         format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, IFRAME_INTERVAL);
@@ -647,4 +702,6 @@ public class MainActivity extends AppCompatActivity {
         }
         return null;
     }
+    public native byte[] yuvToBuffer(ByteBuffer y, ByteBuffer u, ByteBuffer v, int yPixelStride, int yRowStride,
+                                     int uPixelStride, int uRowStride, int vPixelStride, int vRowStride, int imgWidth, int imgHeight);
 }

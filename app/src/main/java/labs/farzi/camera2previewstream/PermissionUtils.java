@@ -15,7 +15,7 @@ public class PermissionUtils {
     static PermissionUtils permissionUtils;
 
     private static String[] PERMISSIONS_REQ = {
-            Manifest.permission.CAMERA};
+            Manifest.permission.CAMERA,Manifest.permission.WRITE_EXTERNAL_STORAGE};
     public static PermissionUtils getInstance(){
         if(permissionUtils == null){
             permissionUtils = new PermissionUtils();
@@ -25,7 +25,8 @@ public class PermissionUtils {
 
     public boolean verifyPermissions(Activity activity) {
         int camera_permission = ActivityCompat.checkSelfPermission(activity, Manifest.permission.CAMERA);
-        if (camera_permission != PackageManager.PERMISSION_GRANTED) {
+        int storage_permission = ActivityCompat.checkSelfPermission(activity, Manifest.permission.WRITE_EXTERNAL_STORAGE);
+        if (camera_permission != PackageManager.PERMISSION_GRANTED && storage_permission != PackageManager.PERMISSION_GRANTED) {
             // We don't have permission so prompt the user
             ActivityCompat.requestPermissions(
                     activity,
