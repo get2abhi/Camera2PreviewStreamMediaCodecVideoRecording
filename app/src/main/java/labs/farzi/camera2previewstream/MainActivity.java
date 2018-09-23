@@ -245,6 +245,7 @@ public class MainActivity extends AppCompatActivity {
                 // fill inputBuffer with valid data
                 MyData data = mQueue.poll();
                 if (data != null) {
+                    inputBuffer.get(data.getBuffer());
                     // check if is EOS and process with EOS flag if is the case
                     // else if NOT EOS
 
